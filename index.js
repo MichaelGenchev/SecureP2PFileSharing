@@ -1,4 +1,4 @@
-const Node = require('./src/node')
+const Node = require('./src/network/node')
 
 const node = new Node();
 
