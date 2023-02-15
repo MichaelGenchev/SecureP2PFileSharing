@@ -1,17 +1,39 @@
-import crypto from 'crypto';
+const net = require('net');
+const crypto = require('crypto');
+const os = require('os');
+const { Message } = require('./message');
+const { MessageType } = require('./message-type');
 
 class Node {
-    constructor(ip, port, host, messageHandler, fileSharing, cli) {
-        this.messageHandler = messageHandler;
-        this.fileSharing = fileSharing;
-        this.id = generateId();
-        this.cli = cli;
-        this.ip = ip;
+    constructor(port, messageHandler) {
+        this.id = this.generateId();
+        this.ip = this.getLocalIpAddress();
         this.port = port;
-        this.host = host;
-        this.server = null;
-        this.sharedFiles = []; 
+        this.messageHandler = messageHandler;
         this.neighborNodes = [];
+        this.sharedFiles = [];
+        this.server = net.createServer(socket => {
+            socket.on('data', data => {
+                const message = Message.fromJSON(data.toString());
+                this.messageHandler.handleMessage(message, this);
+            });
+        });
+    }
+
+    generateId() {
+        const buffer = crypto.randomBytes(4);
+        return buffer.toString('hex').slice(0, 8);
+    }
+
+    getLocalIpAddress() {
+        const interfaces = os.networkInterfaces();
+        for (let iface in interfaces) {
+            for (let alias of interfaces[iface]) {
+                if (alias.family === 'IPv4' && !alias.internal) {
+                    return alias.address;
+                }
+            }
+        }
     }
 
     addNeighbor(node) {
@@ -35,49 +57,31 @@ class Node {
             this.sharedFiles.splice(index, 1);
         }
     }
-    async sendMessage(message, to) {
-        const encryptedMessage = encryptMessage(message)
-        // TODO: add handling of a message
-    }
-    async recieveMessage(message) {
-        const decryptedMessage = decryptMessage(message)
-        // TODO: add handling of a message
-    }
 
-    encryptMessage(message) {
-        const cipher = crypto.createCipher('aes-256-cbc', this.address);
-        let encrypted = cipher.update(message, 'utf8', 'hex');
-        encrypted += cipher.final('hex');
-        return encrypted;
-    }
-    
-    decryptMessage(message) {
-        const decipher = crypto.createDecipher('aes-256-cbc', this.address);
-        let decrypted = decipher.update(message, 'hex', 'utf8');
-        decrypted += decipher.final('utf8');
-        return decrypted;
+    async sendMessage(message, to) {
+        const jsonMessage = message.toJSON();
+        const socket = net.createConnection({
+            host: to.ip,
+            port: to.port
+        });
+        socket.write(jsonMessage);
+        socket.end();
     }
 
     async searchFile(filename) {
         const promises = this.neighborNodes.map(peer => {
-            return peer.sendMessage(this.address, {
-                type: 'search',
-                filename: filename
-            });
+            return peer.sendMessage(new Message(MessageType.SEARCH, { filename }), this);
         });
         const results = await Promise.all(promises);
-        return results.filter(result => result.type === 'result');
+        return results.filter(result => result.type === MessageType.RESULT);
     }
-    
+
     async downloadFile(peerAddress, filename) {
-        const peer = this.neighborNodes.find(peer => this.neighborNodes.address === peerAddress);
+        const peer = this.neighborNodes.find(peer => peer.id === peerAddress);
         if (peer) {
-            const result = await peer.sendMessage(this.address, {
-                type: 'download',
-                filename: filename
-            });
-            if (result.type === 'file') {
-                return result.data; 
+            const result = await peer.sendMessage(new Message(MessageType.DOWNLOAD, { filename }), this);
+            if (result.type === MessageType.FILE) {
+                return result.data;
             } else {
                 throw new Error(`Error downloading file ${filename} from ${peerAddress}`);
             }
@@ -85,22 +89,12 @@ class Node {
             throw new Error(`Peer ${peerAddress} not found`);
         }
     }
+
     start() {
-        // Initialize the server for listening to incoming requests
-        this.server.listen(this.port, () => {
+        this.server.listen(this.port, this.ip, () => {
             console.log(`Node ${this.id} listening on port ${this.port}`);
         });
-        // Start the message handler to handle incoming messages
-        this.messageHandler.start();
-
-        // Start the file sharing component
-        this.fileSharing.start();
-        // Start the UI component to display information and accept user input
-        this.ui.start();
     }
 }
-function generateId() {
-    const buffer = crypto.randomBytes(4);
-    return buffer.toString('hex').slice(0, 8);
-}
-export default Node
+
+module.exports = { Node };
